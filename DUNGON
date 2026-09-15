@@ -1,0 +1,1325 @@
+import pygame
+import random
+import math
+import sys
+
+# ============================================================
+# DUNGEON SURVIVOR
+# A complete one-file Python/Pygame game
+#
+# Controls:
+#   WASD / Arrow Keys = Move
+#   Mouse             = Aim
+#   Left Mouse        = Shoot
+#   SPACE             = Dash
+#   P                 = Pause
+#   R                 = Restart after Game Over
+#   ESC               = Quit
+# ============================================================
+
+pygame.init()
+
+# ----------------------------
+# Window
+# ----------------------------
+WIDTH = 1100
+HEIGHT = 700
+FPS = 60
+
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Dungeon Survivor")
+clock = pygame.time.Clock()
+
+# ----------------------------
+# Fonts
+# ----------------------------
+FONT_SMALL = pygame.font.Font(None, 24)
+FONT = pygame.font.Font(None, 32)
+FONT_BIG = pygame.font.Font(None, 56)
+FONT_HUGE = pygame.font.Font(None, 82)
+
+# ----------------------------
+# Colors
+# ----------------------------
+WHITE = (245, 245, 245)
+BLACK = (15, 15, 20)
+DARK = (25, 27, 35)
+GRAY = (90, 95, 110)
+GREEN = (60, 220, 110)
+RED = (235, 65, 65)
+BLUE = (70, 150, 255)
+YELLOW = (255, 215, 70)
+PURPLE = (170, 90, 240)
+ORANGE = (255, 145, 50)
+CYAN = (60, 220, 220)
+
+# ----------------------------
+# Game states
+# ----------------------------
+PLAYING = 0
+PAUSED = 1
+GAME_OVER = 2
+
+game_state = PLAYING
+
+# ============================================================
+# Helper functions
+# ============================================================
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(value, maximum))
+
+
+def distance(x1, y1, x2, y2):
+    return math.hypot(x2 - x1, y2 - y1)
+
+
+def draw_text(text, font, color, x, y, center=False):
+    surface = font.render(text, True, color)
+
+    if center:
+        rect = surface.get_rect(center=(x, y))
+    else:
+        rect = surface.get_rect(topleft=(x, y))
+
+    screen.blit(surface, rect)
+
+
+def circle_collision(a_x, a_y, a_radius, b_x, b_y, b_radius):
+    return distance(a_x, a_y, b_x, b_y) < a_radius + b_radius
+
+
+# ============================================================
+# Particle
+# ============================================================
+
+class Particle:
+    def __init__(self, x, y, color):
+        self.x = x
+        self.y = y
+        angle = random.uniform(0, math.pi * 2)
+        speed = random.uniform(40, 180)
+
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed
+
+        self.life = random.uniform(0.25, 0.7)
+        self.max_life = self.life
+        self.size = random.randint(2, 5)
+        self.color = color
+
+    def update(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
+        self.vx *= 0.96
+        self.vy *= 0.96
+
+        self.life -= dt
+
+    def draw(self):
+        if self.life <= 0:
+            return
+
+        size = max(1, int(self.size * (self.life / self.max_life)))
+        pygame.draw.circle(
+            screen,
+            self.color,
+            (int(self.x), int(self.y)),
+            size
+        )
+
+
+# ============================================================
+# Bullet
+# ============================================================
+
+class Bullet:
+    def __init__(self, x, y, target_x, target_y, damage):
+        self.x = x
+        self.y = y
+
+        dx = target_x - x
+        dy = target_y - y
+
+        length = math.hypot(dx, dy)
+
+        if length == 0:
+            length = 1
+
+        self.vx = dx / length * 750
+        self.vy = dy / length * 750
+
+        self.radius = 5
+        self.damage = damage
+        self.life = 1.2
+
+    def update(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.life -= dt
+
+    def draw(self):
+        pygame.draw.circle(
+            screen,
+            YELLOW,
+            (int(self.x), int(self.y)),
+            self.radius
+        )
+
+    def alive(self):
+        return (
+            self.life > 0
+            and -20 < self.x < WIDTH + 20
+            and -20 < self.y < HEIGHT + 20
+        )
+
+
+# ============================================================
+# Coin
+# ============================================================
+
+class Coin:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.radius = 9
+        self.bob = random.uniform(0, math.pi * 2)
+
+    def update(self, dt):
+        self.bob += dt * 4
+
+    def draw(self):
+        offset = math.sin(self.bob) * 3
+
+        pygame.draw.circle(
+            screen,
+            YELLOW,
+            (int(self.x), int(self.y + offset)),
+            self.radius
+        )
+
+        pygame.draw.circle(
+            screen,
+            ORANGE,
+            (int(self.x), int(self.y + offset)),
+            self.radius,
+            2
+        )
+
+
+# ============================================================
+# XP Gem
+# ============================================================
+
+class Gem:
+    def __init__(self, x, y, value=10):
+        self.x = x
+        self.y = y
+        self.value = value
+        self.radius = 7
+        self.angle = random.uniform(0, math.pi * 2)
+
+    def update(self, dt):
+        self.angle += dt * 3
+
+    def draw(self):
+        y_offset = math.sin(self.angle) * 3
+
+        points = [
+            (self.x, self.y - self.radius + y_offset),
+            (self.x + self.radius, self.y + y_offset),
+            (self.x, self.y + self.radius + y_offset),
+            (self.x - self.radius, self.y + y_offset)
+        ]
+
+        pygame.draw.polygon(screen, CYAN, points)
+
+
+# ============================================================
+# Enemy
+# ============================================================
+
+class Enemy:
+    def __init__(self, level):
+        side = random.randint(0, 3)
+
+        if side == 0:
+            self.x = random.randint(0, WIDTH)
+            self.y = -40
+        elif side == 1:
+            self.x = WIDTH + 40
+            self.y = random.randint(0, HEIGHT)
+        elif side == 2:
+            self.x = random.randint(0, WIDTH)
+            self.y = HEIGHT + 40
+        else:
+            self.x = -40
+            self.y = random.randint(0, HEIGHT)
+
+        # Different enemy types
+        roll = random.random()
+
+        if roll < 0.72:
+            # Normal enemy
+            self.kind = "normal"
+            self.radius = 18
+            self.speed = random.uniform(80, 125) + level * 3
+            self.max_health = 30 + level * 7
+            self.damage = 8 + level
+            self.color = RED
+            self.xp = 12
+
+        elif roll < 0.92:
+            # Fast enemy
+            self.kind = "fast"
+            self.radius = 13
+            self.speed = random.uniform(150, 200) + level * 4
+            self.max_health = 18 + level * 4
+            self.damage = 5 + level
+            self.color = ORANGE
+            self.xp = 18
+
+        else:
+            # Tank enemy
+            self.kind = "tank"
+            self.radius = 28
+            self.speed = random.uniform(45, 70) + level * 2
+            self.max_health = 100 + level * 15
+            self.damage = 18 + level * 2
+            self.color = PURPLE
+            self.xp = 35
+
+        self.health = self.max_health
+        self.hit_flash = 0
+
+    def update(self, player, dt):
+        dx = player.x - self.x
+        dy = player.y - self.y
+
+        length = math.hypot(dx, dy)
+
+        if length > 0:
+            self.x += dx / length * self.speed * dt
+            self.y += dy / length * self.speed * dt
+
+        self.hit_flash = max(0, self.hit_flash - dt)
+
+    def draw(self):
+        color = WHITE if self.hit_flash > 0 else self.color
+
+        pygame.draw.circle(
+            screen,
+            color,
+            (int(self.x), int(self.y)),
+            self.radius
+        )
+
+        # Eyes
+        pygame.draw.circle(
+            screen,
+            BLACK,
+            (int(self.x - self.radius * 0.35),
+             int(self.y - self.radius * 0.15)),
+            max(2, self.radius // 5)
+        )
+
+        pygame.draw.circle(
+            screen,
+            BLACK,
+            (int(self.x + self.radius * 0.35),
+             int(self.y - self.radius * 0.15)),
+            max(2, self.radius // 5)
+        )
+
+        # Health bar
+        if self.health < self.max_health:
+            bar_width = self.radius * 2
+            health_width = int(
+                bar_width * self.health / self.max_health
+            )
+
+            pygame.draw.rect(
+                screen,
+                BLACK,
+                (
+                    int(self.x - self.radius),
+                    int(self.y - self.radius - 10),
+                    bar_width,
+                    5
+                )
+            )
+
+            pygame.draw.rect(
+                screen,
+                GREEN,
+                (
+                    int(self.x - self.radius),
+                    int(self.y - self.radius - 10),
+                    health_width,
+                    5
+                )
+            )
+
+
+# ============================================================
+# Player
+# ============================================================
+
+class Player:
+    def __init__(self):
+        self.x = WIDTH // 2
+        self.y = HEIGHT // 2
+
+        self.radius = 20
+
+        self.speed = 270
+
+        self.max_health = 100
+        self.health = self.max_health
+
+        self.damage = 25
+        self.fire_rate = 0.22
+        self.fire_timer = 0
+
+        self.level = 1
+        self.xp = 0
+        self.xp_needed = 100
+
+        self.coins = 0
+        self.kills = 0
+
+        self.invincible = 0
+
+        self.dash_cooldown = 0
+        self.dash_duration = 0
+
+        self.last_dx = 1
+        self.last_dy = 0
+
+    def update(self, dt):
+        keys = pygame.key.get_pressed()
+
+        dx = 0
+        dy = 0
+
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
+            dy -= 1
+
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+            dy += 1
+
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            dx -= 1
+
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            dx += 1
+
+        if dx != 0 or dy != 0:
+            length = math.hypot(dx, dy)
+
+            dx /= length
+            dy /= length
+
+            self.last_dx = dx
+            self.last_dy = dy
+
+            self.x += dx * self.speed * dt
+            self.y += dy * self.speed * dt
+
+        self.x = clamp(
+            self.x,
+            self.radius,
+            WIDTH - self.radius
+        )
+
+        self.y = clamp(
+            self.y,
+            self.radius,
+            HEIGHT - self.radius
+        )
+
+        self.fire_timer = max(0, self.fire_timer - dt)
+        self.invincible = max(0, self.invincible - dt)
+        self.dash_cooldown = max(0, self.dash_cooldown - dt)
+        self.dash_duration = max(0, self.dash_duration - dt)
+
+    def shoot(self, target_x, target_y):
+        if self.fire_timer > 0:
+            return None
+
+        self.fire_timer = self.fire_rate
+
+        return Bullet(
+            self.x,
+            self.y,
+            target_x,
+            target_y,
+            self.damage
+        )
+
+    def dash(self):
+        if self.dash_cooldown > 0:
+            return
+
+        keys = pygame.key.get_pressed()
+
+        dx = 0
+        dy = 0
+
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
+            dy -= 1
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+            dy += 1
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            dx -= 1
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            dx += 1
+
+        if dx == 0 and dy == 0:
+            dx = self.last_dx
+            dy = self.last_dy
+        else:
+            length = math.hypot(dx, dy)
+            dx /= length
+            dy /= length
+
+        self.x += dx * 130
+        self.y += dy * 130
+
+        self.x = clamp(
+            self.x,
+            self.radius,
+            WIDTH - self.radius
+        )
+
+        self.y = clamp(
+            self.y,
+            self.radius,
+            HEIGHT - self.radius
+        )
+
+        self.dash_cooldown = 1.5
+        self.invincible = 0.25
+
+    def take_damage(self, amount):
+        if self.invincible > 0:
+            return False
+
+        self.health -= amount
+        self.invincible = 0.7
+
+        return True
+
+    def add_xp(self, amount):
+        self.xp += amount
+
+        leveled_up = False
+
+        while self.xp >= self.xp_needed:
+            self.xp -= self.xp_needed
+            self.level += 1
+
+            self.xp_needed = int(self.xp_needed * 1.25)
+
+            # Upgrade player
+            self.max_health += 15
+            self.health = self.max_health
+
+            self.damage += 7
+            self.fire_rate = max(0.08, self.fire_rate - 0.015)
+            self.speed += 8
+
+            leveled_up = True
+
+        return leveled_up
+
+    def draw(self):
+        # Blink while invincible
+        if self.invincible > 0:
+            if int(self.invincible * 20) % 2 == 0:
+                return
+
+        pygame.draw.circle(
+            screen,
+            BLUE,
+            (int(self.x), int(self.y)),
+            self.radius
+        )
+
+        # Direction indicator
+        end_x = self.x + self.last_dx * 30
+        end_y = self.y + self.last_dy * 30
+
+        pygame.draw.line(
+            screen,
+            WHITE,
+            (int(self.x), int(self.y)),
+            (int(end_x), int(end_y)),
+            5
+        )
+
+
+# ============================================================
+# Game variables
+# ============================================================
+
+player = Player()
+
+bullets = []
+enemies = []
+coins = []
+gems = []
+particles = []
+
+wave = 1
+enemies_to_spawn = 8
+spawned_this_wave = 0
+spawn_timer = 0
+
+score = 0
+
+message = ""
+message_timer = 0
+
+background_offset = 0
+
+
+# ============================================================
+# Reset game
+# ============================================================
+
+def reset_game():
+    global player
+    global bullets, enemies, coins, gems, particles
+    global wave, enemies_to_spawn, spawned_this_wave
+    global spawn_timer, score
+    global game_state
+    global message, message_timer
+
+    player = Player()
+
+    bullets = []
+    enemies = []
+    coins = []
+    gems = []
+    particles = []
+
+    wave = 1
+    enemies_to_spawn = 8
+    spawned_this_wave = 0
+    spawn_timer = 0
+
+    score = 0
+
+    message = "SURVIVE!"
+    message_timer = 2
+
+    game_state = PLAYING
+
+
+# ============================================================
+# Spawn effects
+# ============================================================
+
+def create_particles(x, y, color, amount=12):
+    for _ in range(amount):
+        particles.append(
+            Particle(x, y, color)
+        )
+
+
+# ============================================================
+# Draw background
+# ============================================================
+
+def draw_background():
+    screen.fill(DARK)
+
+    # Dungeon floor tiles
+    tile = 50
+
+    for x in range(0, WIDTH, tile):
+        for y in range(0, HEIGHT, tile):
+            rect = pygame.Rect(x, y, tile, tile)
+
+            if (x // tile + y // tile) % 2 == 0:
+                pygame.draw.rect(
+                    screen,
+                    (29, 31, 40),
+                    rect
+                )
+            else:
+                pygame.draw.rect(
+                    screen,
+                    (26, 28, 36),
+                    rect
+                )
+
+            pygame.draw.rect(
+                screen,
+                (35, 37, 47),
+                rect,
+                1
+            )
+
+    # Decorative dots
+    random.seed(12345)
+
+    for _ in range(80):
+        x = random.randint(0, WIDTH)
+        y = random.randint(0, HEIGHT)
+
+        pygame.draw.circle(
+            screen,
+            (45, 47, 57),
+            (x, y),
+            2
+        )
+
+    random.seed()
+
+
+# ============================================================
+# HUD
+# ============================================================
+
+def draw_hud():
+    # Health
+    bar_x = 20
+    bar_y = 18
+    bar_width = 260
+    bar_height = 24
+
+    pygame.draw.rect(
+        screen,
+        BLACK,
+        (bar_x, bar_y, bar_width, bar_height)
+    )
+
+    health_width = int(
+        bar_width * max(0, player.health) / player.max_health
+    )
+
+    pygame.draw.rect(
+        screen,
+        GREEN,
+        (bar_x, bar_y, health_width, bar_height)
+    )
+
+    draw_text(
+        f"HP {max(0, int(player.health))}/{player.max_health}",
+        FONT_SMALL,
+        WHITE,
+        bar_x + 8,
+        bar_y + 3
+    )
+
+    # XP
+    xp_y = 50
+
+    pygame.draw.rect(
+        screen,
+        BLACK,
+        (bar_x, xp_y, bar_width, 12)
+    )
+
+    xp_width = int(
+        bar_width * player.xp / player.xp_needed
+    )
+
+    pygame.draw.rect(
+        screen,
+        CYAN,
+        (bar_x, xp_y, xp_width, 12)
+    )
+
+    draw_text(
+        f"LEVEL {player.level}",
+        FONT,
+        WHITE,
+        bar_x,
+        70
+    )
+
+    draw_text(
+        f"Wave: {wave}",
+        FONT,
+        WHITE,
+        WIDTH - 180,
+        20
+    )
+
+    draw_text(
+        f"Score: {score}",
+        FONT,
+        WHITE,
+        WIDTH - 180,
+        52
+    )
+
+    draw_text(
+        f"Coins: {player.coins}",
+        FONT,
+        YELLOW,
+        WIDTH - 180,
+        84
+    )
+
+    draw_text(
+        f"Kills: {player.kills}",
+        FONT,
+        WHITE,
+        WIDTH - 180,
+        116
+    )
+
+    # Dash cooldown
+    if player.dash_cooldown <= 0:
+        dash_text = "SPACE: DASH READY"
+        dash_color = CYAN
+    else:
+        dash_text = f"SPACE: DASH {player.dash_cooldown:.1f}s"
+        dash_color = GRAY
+
+    draw_text(
+        dash_text,
+        FONT_SMALL,
+        dash_color,
+        20,
+        HEIGHT - 30
+    )
+
+    draw_text(
+        "WASD: Move   Mouse: Aim   LMB: Shoot   P: Pause",
+        FONT_SMALL,
+        GRAY,
+        300,
+        HEIGHT - 30
+    )
+
+
+# ============================================================
+# Main game loop
+# ============================================================
+
+reset_game()
+
+running = True
+
+while running:
+
+    dt = clock.tick(FPS) / 1000.0
+
+    # Limit dt
+    dt = min(dt, 0.05)
+
+    # --------------------------------------------------------
+    # Events
+    # --------------------------------------------------------
+
+    for event in pygame.event.get():
+
+        if event.type == pygame.QUIT:
+            running = False
+
+        if event.type == pygame.KEYDOWN:
+
+            if event.key == pygame.K_ESCAPE:
+                running = False
+
+            if event.key == pygame.K_p:
+
+                if game_state == PLAYING:
+                    game_state = PAUSED
+
+                elif game_state == PAUSED:
+                    game_state = PLAYING
+
+            if event.key == pygame.K_SPACE:
+
+                if game_state == PLAYING:
+                    player.dash()
+
+            if event.key == pygame.K_r:
+
+                if game_state == GAME_OVER:
+                    reset_game()
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+
+            if event.button == 1 and game_state == PLAYING:
+                bullet = player.shoot(*pygame.mouse.get_pos())
+
+                if bullet:
+                    bullets.append(bullet)
+
+    # --------------------------------------------------------
+    # Playing
+    # --------------------------------------------------------
+
+    if game_state == PLAYING:
+
+        player.update(dt)
+
+        # ----------------------------
+        # Shooting
+        # ----------------------------
+
+        mouse_buttons = pygame.mouse.get_pressed()
+
+        if mouse_buttons[0]:
+            bullet = player.shoot(*pygame.mouse.get_pos())
+
+            if bullet:
+                bullets.append(bullet)
+
+        # ----------------------------
+        # Wave spawning
+        # ----------------------------
+
+        spawn_timer -= dt
+
+        if spawned_this_wave < enemies_to_spawn:
+
+            if spawn_timer <= 0:
+
+                enemies.append(
+                    Enemy(player.level)
+                )
+
+                spawned_this_wave += 1
+
+                # Spawn faster at higher waves
+                spawn_timer = max(
+                    0.12,
+                    0.65 - wave * 0.015
+                )
+
+        elif len(enemies) == 0:
+
+            wave += 1
+
+            enemies_to_spawn = 8 + wave * 3
+            spawned_this_wave = 0
+
+            message = f"WAVE {wave}!"
+            message_timer = 2
+
+            # Small reward for clearing wave
+            player.coins += 5
+
+        # ----------------------------
+        # Bullets
+        # ----------------------------
+
+        for bullet in bullets:
+            bullet.update(dt)
+
+        bullets = [
+            bullet for bullet in bullets
+            if bullet.alive()
+        ]
+
+        # ----------------------------
+        # Enemies
+        # ----------------------------
+
+        for enemy in enemies:
+            enemy.update(player, dt)
+
+        # ----------------------------
+        # Bullet vs enemy collision
+        # ----------------------------
+
+        bullets_to_remove = set()
+        enemies_to_remove = set()
+
+        for bullet in bullets:
+
+            for enemy in enemies:
+
+                if id(enemy) in enemies_to_remove:
+                    continue
+
+                if id(bullet) in bullets_to_remove:
+                    continue
+
+                if circle_collision(
+                    bullet.x,
+                    bullet.y,
+                    bullet.radius,
+                    enemy.x,
+                    enemy.y,
+                    enemy.radius
+                ):
+
+                    enemy.health -= bullet.damage
+                    enemy.hit_flash = 0.08
+
+                    bullets_to_remove.add(id(bullet))
+
+                    create_particles(
+                        bullet.x,
+                        bullet.y,
+                        YELLOW,
+                        5
+                    )
+
+                    if enemy.health <= 0:
+
+                        enemies_to_remove.add(id(enemy))
+
+                        player.kills += 1
+                        score += 10 * wave
+
+                        # XP
+                        gem = Gem(
+                            enemy.x,
+                            enemy.y,
+                            enemy.xp
+                        )
+
+                        gems.append(gem)
+
+                        # Coins
+                        if random.random() < 0.35:
+                            coins.append(
+                                Coin(
+                                    enemy.x,
+                                    enemy.y
+                                )
+                            )
+
+                        create_particles(
+                            enemy.x,
+                            enemy.y,
+                            enemy.color,
+                            18
+                        )
+
+        bullets = [
+            b for b in bullets
+            if id(b) not in bullets_to_remove
+        ]
+
+        enemies = [
+            e for e in enemies
+            if id(e) not in enemies_to_remove
+        ]
+
+        # ----------------------------
+        # Enemy vs player
+        # ----------------------------
+
+        for enemy in enemies:
+
+            if circle_collision(
+                player.x,
+                player.y,
+                player.radius,
+                enemy.x,
+                enemy.y,
+                enemy.radius
+            ):
+
+                if player.take_damage(enemy.damage):
+
+                    create_particles(
+                        player.x,
+                        player.y,
+                        RED,
+                        10
+                    )
+
+                    # Push enemy away
+                    dx = enemy.x - player.x
+                    dy = enemy.y - player.y
+
+                    length = math.hypot(dx, dy)
+
+                    if length == 0:
+                        length = 1
+
+                    enemy.x += dx / length * 30
+                    enemy.y += dy / length * 30
+
+        # ----------------------------
+        # Gems
+        # ----------------------------
+
+        for gem in gems:
+            gem.update(dt)
+
+            if circle_collision(
+                player.x,
+                player.y,
+                player.radius + 8,
+                gem.x,
+                gem.y,
+                gem.radius
+            ):
+
+                leveled_up = player.add_xp(gem.value)
+
+                create_particles(
+                    gem.x,
+                    gem.y,
+                    CYAN,
+                    8
+                )
+
+                if leveled_up:
+
+                    message = f"LEVEL {player.level}!"
+                    message_timer = 2
+
+                    create_particles(
+                        player.x,
+                        player.y,
+                        CYAN,
+                        35
+                    )
+
+        gems = [
+            g for g in gems
+            if not circle_collision(
+                player.x,
+                player.y,
+                player.radius + 8,
+                g.x,
+                g.y,
+                g.radius
+            )
+        ]
+
+        # ----------------------------
+        # Coins
+        # ----------------------------
+
+        for coin in coins:
+            coin.update(dt)
+
+        collected_coins = []
+
+        for coin in coins:
+
+            if circle_collision(
+                player.x,
+                player.y,
+                player.radius,
+                coin.x,
+                coin.y,
+                coin.radius
+            ):
+
+                collected_coins.append(coin)
+                player.coins += 1
+                score += 25
+
+                create_particles(
+                    coin.x,
+                    coin.y,
+                    YELLOW,
+                    10
+                )
+
+        coins = [
+            c for c in coins
+            if c not in collected_coins
+        ]
+
+        # ----------------------------
+        # Particles
+        # ----------------------------
+
+        for particle in particles:
+            particle.update(dt)
+
+        particles = [
+            p for p in particles
+            if p.life > 0
+        ]
+
+        # ----------------------------
+        # Message timer
+        # ----------------------------
+
+        message_timer = max(
+            0,
+            message_timer - dt
+        )
+
+        # ----------------------------
+        # Game over
+        # ----------------------------
+
+        if player.health <= 0:
+
+            player.health = 0
+            game_state = GAME_OVER
+
+            create_particles(
+                player.x,
+                player.y,
+                RED,
+                50
+            )
+
+    # --------------------------------------------------------
+    # Draw
+    # --------------------------------------------------------
+
+    draw_background()
+
+    # Gems
+    for gem in gems:
+        gem.draw()
+
+    # Coins
+    for coin in coins:
+        coin.draw()
+
+    # Bullets
+    for bullet in bullets:
+        bullet.draw()
+
+    # Enemies
+    for enemy in enemies:
+        enemy.draw()
+
+    # Player
+    player.draw()
+
+    # Particles
+    for particle in particles:
+        particle.draw()
+
+    # HUD
+    draw_hud()
+
+    # --------------------------------------------------------
+    # Message
+    # --------------------------------------------------------
+
+    if message_timer > 0:
+
+        alpha = min(
+            255,
+            int(message_timer * 255)
+        )
+
+        text_surface = FONT_BIG.render(
+            message,
+            True,
+            WHITE
+        )
+
+        text_surface.set_alpha(alpha)
+
+        rect = text_surface.get_rect(
+            center=(WIDTH // 2, 110)
+        )
+
+        screen.blit(
+            text_surface,
+            rect
+        )
+
+    # --------------------------------------------------------
+    # Pause screen
+    # --------------------------------------------------------
+
+    if game_state == PAUSED:
+
+        overlay = pygame.Surface(
+            (WIDTH, HEIGHT),
+            pygame.SRCALPHA
+        )
+
+        overlay.fill((0, 0, 0, 150))
+        screen.blit(overlay, (0, 0))
+
+        draw_text(
+            "PAUSED",
+            FONT_HUGE,
+            WHITE,
+            WIDTH // 2,
+            HEIGHT // 2 - 50,
+            center=True
+        )
+
+        draw_text(
+            "Press P to continue",
+            FONT,
+            GRAY,
+            WIDTH // 2,
+            HEIGHT // 2 + 25,
+            center=True
+        )
+
+    # --------------------------------------------------------
+    # Game over screen
+    # --------------------------------------------------------
+
+    if game_state == GAME_OVER:
+
+        overlay = pygame.Surface(
+            (WIDTH, HEIGHT),
+            pygame.SRCALPHA
+        )
+
+        overlay.fill((0, 0, 0, 175))
+        screen.blit(overlay, (0, 0))
+
+        draw_text(
+            "GAME OVER",
+            FONT_HUGE,
+            RED,
+            WIDTH // 2,
+            HEIGHT // 2 - 100,
+            center=True
+        )  
+
+        draw_text(
+            f"Score: {score}",
+            FONT_BIG,
+            WHITE,
+            WIDTH // 2,
+            HEIGHT // 2 - 20,
+            center=True
+        )
+
+        draw_text(
+            f"Wave reached: {wave}",
+            FONT,
+            WHITE,
+            WIDTH // 2,
+            HEIGHT // 2 + 30,
+            center=True
+        )
+
+        draw_text(
+            f"Kills: {player.kills}",
+            FONT,
+            WHITE,
+            WIDTH // 2,
+            HEIGHT // 2 + 70,
+            center=True
+        )
+
+        draw_text(
+            "Press R to restart",
+            FONT,
+            YELLOW,
+            WIDTH // 2,
+            HEIGHT // 2 + 130,
+            center=True
+        )
+
+    pygame.display.flip()
+
+
+pygame.quit()
+sys.exit()
+
